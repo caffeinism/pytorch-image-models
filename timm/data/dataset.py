@@ -213,3 +213,85 @@ class AugMixDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.dataset)
+
+import torch.utils.data as data
+import os.path
+import json
+from collections import defaultdict
+from PIL import Image  
+import numpy as np
+    
+class CocoDataset(data.Dataset):
+    def _get_class_to_idx_from_annotation(self, annotation):
+        assert 'categories' in annotation, 'wrong coco annotation format'
+
+        return {
+            it['name']: it['id'] for it in annotation['categories']
+        }
+
+
+    def _get_samples_from_annotation(self, annotation, base_path=''):
+        assert 'images' in annotation, 'wrong coco annotation format'
+        assert 'annotations' in annotation, 'wrong coco annotation format'
+
+        image_label_dict = defaultdict(list)
+
+        for it in annotation['annotations']:
+            category_id = it['category_id']
+            image_id = it['image_id']
+
+            image_label_dict[image_id].append(category_id)
+
+        return [
+            (
+                os.path.join(base_path, it['file_name']), tuple(set(image_label_dict[it['id']]))
+            ) for it in annotation['images']
+        ]
+
+    def __init__(
+        self,
+        root,
+        load_bytes=False,
+        transform=None,
+        **_,
+    ):
+        self.root = root
+        self.load_bytes = load_bytes
+        self.transform = transform
+        
+        
+        data_base_path = os.path.join(root, 'data/')
+        annotation_file_path = os.path.join(root, 'annotations.json')
+        
+        with open(annotation_file_path, 'r') as fp:
+            annotation = json.loads(fp.read())
+            
+        self.class_to_idx = self._get_class_to_idx_from_annotation(annotation)
+        self.samples = self._get_samples_from_annotation(annotation, base_path=data_base_path)
+    
+    def __getitem__(self, index):
+        path, target = self.samples[index]
+        img = open(path, 'rb').read() if self.load_bytes else Image.open(path).convert('RGB')
+        if self.transform is not None:
+            img = self.transform(img)
+            
+        label = np.zeros(len(self.class_to_idx))
+        for t in target:
+            label[t] = 1.0
+        
+        return img, label
+    
+    def __len__(self):
+        return len(self.samples)
+    
+    def filenames(self, indices=[], basename=False):
+        if indices:
+            if basename:
+                return [os.path.basename(self.samples[i][0]) for i in indices]
+            else:
+                return [self.samples[i][0] for i in indices]
+        else:
+            if basename:
+                return [os.path.basename(x[0]) for x in self.samples]
+            else:
+                return [x[0] for x in self.samples]
