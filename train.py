@@ -539,7 +539,7 @@ def main():
     best_epoch = None
     saver = None
     output_dir = ''
-    if args.local_rank == 0:
+    if args.rank == 0:
         output_base = args.output if args.output else './output'
         exp_name = '-'.join([
             datetime.now().strftime("%Y%m%d-%H%M%S"),
@@ -569,12 +569,13 @@ def main():
                     _logger.info("Distributing BatchNorm running means and vars")
                 distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
 
-            eval_metrics = validate(model, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast)
+            eval_metrics = validate_bulk(model, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast)
 
             if model_ema is not None and not args.model_ema_force_cpu:
                 if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
                     distribute_bn(model_ema, args.world_size, args.dist_bn == 'reduce')
-                ema_eval_metrics = validate(
+
+                ema_eval_metrics = validate_bulk(
                     model_ema.ema, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast, log_suffix=' (EMA)')
                 eval_metrics = ema_eval_metrics
 
@@ -781,6 +782,88 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
 
     return metrics
 
+
+def validate_bulk(model, loader, loss_fn, args, log_suffix=''):
+    batch_time_m = AverageMeter()
+    losses_m = AverageMeter()
+
+    model.eval()
+
+    end = time.time()
+    last_idx = len(loader) - 1
+    
+    logits, targets = [], []    
+    with torch.no_grad():
+        for batch_idx, (input, target) in enumerate(loader):
+            last_batch = batch_idx == last_idx
+            if not args.prefetcher:
+                input = input.cuda()
+                target = target.cuda()
+
+            output = model(input)
+            if isinstance(output, (tuple, list)):
+                output = output[0]
+
+            # augmentation reduction
+            reduce_factor = args.tta
+            if reduce_factor > 1:
+                output = output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
+                target = target[0:target.size(0):reduce_factor]
+                
+            logit = torch.sigmoid(output)
+            
+            loss = loss_fn(logit, target)
+                
+            if args.distributed:
+                reduced_loss = reduce_tensor(loss.data, args.world_size)
+                gathered_logit = gather_tensor(logit.data, args.world_size)
+                gathered_target = gather_tensor(target.data, args.world_size)
+            else:
+                reduced_loss = loss.data
+                gathered_logit = logit.data            
+                gathered_target = target.data            
+                
+            torch.cuda.synchronize()
+
+            losses_m.update(reduced_loss.item(), input.size(0))
+            logits.append(gathered_logit.cpu())
+            targets.append(gathered_target.cpu())
+
+            batch_time_m.update(time.time() - end)
+            end = time.time()
+            if args.local_rank == 0 and (last_batch or batch_idx % args.log_interval == 0):
+                log_name = 'Test' + log_suffix
+                log_text = (
+                    '{0}: [{1:>4d}/{2}]  '
+                    'Time: {batch_time.val:.3f} ({batch_time.avg:.3f})  '
+                    'Loss: {loss.val:>7.4f} ({loss.avg:>6.4f})  '.format(
+                        log_name, batch_idx, last_idx, batch_time=batch_time_m,
+                        loss=losses_m,
+                    )
+                )
+                
+                logging.info(log_text)
+    
+    logits, targets = torch.cat(logits), torch.cat(targets)
+    
+    if not args.use_multi_label:
+        acc1, acc5 = bulk_accuracy(output, target, topk=(1, 5))
+        metric = {
+            ('top1', 'Acc@1'): acc1,
+            ('top5', 'Acc@5'): acc5,
+        }
+    else:
+        metric = bulk_multi_label_metrics(logits, targets, threshold=0.5)
+        
+    
+    log_text = ''
+    for (_, title), value in metric.items():
+        log_text += '{title}: {value:>7.4f}  '.format(title=title, value=value)
+    logging.info(log_text)
+    
+    metrics = OrderedDict([('loss', losses_m.avg), *[(metric_name, value) for (metric_name, _), value in metric.items()]])
+
+    return metrics
 
 if __name__ == '__main__':
     main()
