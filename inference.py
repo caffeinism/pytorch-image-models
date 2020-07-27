@@ -11,6 +11,7 @@ import argparse
 import logging
 import numpy as np
 import torch
+import torch.nn as nn
 
 from timm.models import create_model, apply_test_time_pool
 from timm.data import Dataset, create_loader, resolve_data_config
@@ -96,13 +97,13 @@ def main():
     k = min(args.topk, args.num_classes)
     batch_time = AverageMeter()
     end = time.time()
-    topk_ids = []
+    
+    logits = []
     with torch.no_grad():
         for batch_idx, (input, _) in enumerate(loader):
             input = input.cuda()
             labels = model(input)
-            topk = labels.topk(k)[1]
-            topk_ids.append(topk.cpu().numpy())
+            logits.append(torch.sigmoid(labels).cpu().numpy())
 
             # measure elapsed time
             batch_time.update(time.time() - end)
@@ -112,16 +113,17 @@ def main():
                 _logger.info('Predict: [{0}/{1}] Time {batch_time.val:.3f} ({batch_time.avg:.3f})'.format(
                     batch_idx, len(loader), batch_time=batch_time))
 
-    topk_ids = np.concatenate(topk_ids, axis=0).squeeze()
-
-    with open(os.path.join(args.output_dir, './topk_ids.csv'), 'w') as out_file:
-        out_file.write('filename,res\n')
+    logits = np.concatenate(logits, axis=0).squeeze()
+    labels = ["can", "plastic", "paper", "vinyl", "normal", "food", "glass", "styrofoam"]
+    
+    with open(os.path.join(args.output_dir, './logits.csv'), 'w') as out_file:
+        out_file.write(','.join(labels) + '\n')
         filenames = loader.dataset.filenames()
-        for filename, label in zip(filenames, topk_ids):
+        for filename, logit in zip(filenames, logits):
             filename = os.path.basename(filename)
             
-            out_file.write('{0},{1}\n'.format(filename, label[0]))
-            out_file.write('{0},{1}\n'.format(filename, label[1]))
+            label = ','.join(map(str, logit))
+            out_file.write('{0},{1}\n'.format(filename, label))
 
 
 if __name__ == '__main__':

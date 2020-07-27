@@ -520,8 +520,12 @@ def main():
     )
 
     if args.use_multi_label:
-        train_loss_fn = nn.BCEWithLogitsLoss().cuda()
-        validate_loss_fn = train_loss_fn
+        if args.jsd:
+            train_loss_fn = JsdBCEWithLogitsLoss(num_splits=num_aug_splits, smoothing=args.smoothing).cuda()
+            validate_loss_fn = nn.BCEWithLogitsLoss().cuda()
+        else:
+            train_loss_fn = nn.BCEWithLogitsLoss().cuda()
+            validate_loss_fn = train_loss_fn
     elif args.jsd:
         assert num_aug_splits > 1  # JSD only valid with aug splits set
         train_loss_fn = JsdCrossEntropy(num_splits=num_aug_splits, smoothing=args.smoothing).cuda()
@@ -826,8 +830,8 @@ def validate_bulk(model, loader, loss_fn, args, log_suffix=''):
             torch.cuda.synchronize()
 
             losses_m.update(reduced_loss.item(), input.size(0))
-            logits.append(gathered_logit.cpu())
-            targets.append(gathered_target.cpu())
+            logits.append(gathered_logit.cpu().numpy())
+            targets.append(gathered_target.cpu().numpy())
 
             batch_time_m.update(time.time() - end)
             end = time.time()
@@ -844,7 +848,7 @@ def validate_bulk(model, loader, loss_fn, args, log_suffix=''):
                 
                 logging.info(log_text)
     
-    logits, targets = torch.cat(logits), torch.cat(targets)
+    logits, targets = np.concatenate(logits), np.concatenate(targets)
     
     if not args.use_multi_label:
         acc1, acc5 = bulk_accuracy(output, target, topk=(1, 5))
@@ -855,11 +859,11 @@ def validate_bulk(model, loader, loss_fn, args, log_suffix=''):
     else:
         metric = bulk_multi_label_metrics(logits, targets, threshold=0.5)
         
-    
-    log_text = ''
-    for (_, title), value in metric.items():
-        log_text += '{title}: {value:>7.4f}  '.format(title=title, value=value)
-    logging.info(log_text)
+    if args.local_rank == 0:
+        log_text = ''
+        for (_, title), value in metric.items():
+            log_text += '{title}: {value:>7.4f}  '.format(title=title, value=value)
+        logging.info(log_text)
     
     metrics = OrderedDict([('loss', losses_m.avg), *[(metric_name, value) for (metric_name, _), value in metric.items()]])
 

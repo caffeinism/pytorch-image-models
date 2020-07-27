@@ -16,12 +16,14 @@ import logging
 import torch
 import torch.nn as nn
 import torch.nn.parallel
+import numpy as np
 from collections import OrderedDict
 from contextlib import suppress
+from ensemble import ensemble
 
 from timm.models import create_model, apply_test_time_pool, load_checkpoint, is_model, list_models
-from timm.data import Dataset, DatasetTar, create_loader, resolve_data_config, RealLabelsImagenet
-from timm.utils import accuracy, AverageMeter, natural_key, setup_default_logging, set_jit_legacy
+from timm.data import CocoDataset, Dataset, DatasetTar, create_loader, resolve_data_config, RealLabelsImagenet
+from timm.utils import bulk_multi_label_metrics, accuracy, AverageMeter, natural_key, setup_default_logging, set_jit_legacy
 
 has_apex = False
 try:
@@ -44,8 +46,6 @@ _logger = logging.getLogger('validate')
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Validation')
 parser.add_argument('data', metavar='DIR',
                     help='path to dataset')
-parser.add_argument('--model', '-m', metavar='MODEL', default='dpn92',
-                    help='model architecture (default: dpn92)')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 2)')
 parser.add_argument('-b', '--batch-size', default=256, type=int,
@@ -60,15 +60,13 @@ parser.add_argument('--std', type=float,  nargs='+', default=None, metavar='STD'
                     help='Override std deviation of of dataset')
 parser.add_argument('--interpolation', default='', type=str, metavar='NAME',
                     help='Image resize interpolation type (overrides model)')
-parser.add_argument('--num-classes', type=int, default=1000,
-                    help='Number classes in dataset')
 parser.add_argument('--class-map', default='', type=str, metavar='FILENAME',
                     help='path to class to idx mapping file (default: "")')
 parser.add_argument('--gp', default=None, type=str, metavar='POOL',
                     help='Global pool type, one of (fast, avg, max, avgmax, avgmaxc). Model default if None.')
 parser.add_argument('--log-freq', default=10, type=int,
                     metavar='N', help='batch logging frequency (default: 10)')
-parser.add_argument('--checkpoint', default='', type=str, metavar='PATH',
+parser.add_argument('--checkpoints', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 parser.add_argument('--pretrained', dest='pretrained', action='store_true',
                     help='use pre-trained model')
@@ -103,10 +101,43 @@ parser.add_argument('--real-labels', default='', type=str, metavar='FILENAME',
 parser.add_argument('--valid-labels', default='', type=str, metavar='FILENAME',
                     help='Valid label indices txt file for validation of partial label space')
 
+import torch
+import torch.nn as nn
+from copy import deepcopy
+import torch.utils.model_zoo as model_zoo
+import os
+import logging
+from collections import OrderedDict
+from timm.models.layers.conv2d_same import Conv2dSame
 
-def validate(args):
+
+def load_state_dict(checkpoint, use_ema=False):
+    state_dict_key = 'state_dict'
+    if isinstance(checkpoint, dict):
+        if use_ema and 'state_dict_ema' in checkpoint:
+            print('using model ema')
+            state_dict_key = 'state_dict_ema'
+    if state_dict_key and state_dict_key in checkpoint:
+        new_state_dict = OrderedDict()
+        for k, v in checkpoint[state_dict_key].items():
+            # strip `module.` prefix
+            name = k[7:] if k.startswith('module') else k
+            new_state_dict[name] = v
+        state_dict = new_state_dict
+    else:
+        state_dict = checkpoint
+    logging.info("Loaded {} from checkpoint".format(state_dict_key))
+    return state_dict
+
+
+def load_checkpoint(model, checkpoint, use_ema=False, strict=True):
+    state_dict = load_state_dict(checkpoint, use_ema)
+    model.load_state_dict(state_dict, strict=strict)
+    
+    
+def validate(args, checkpoint=None):
     # might as well try to validate something
-    args.pretrained = args.pretrained or not args.checkpoint
+    args.pretrained = args.pretrained or not checkpoint
     args.prefetcher = not args.no_prefetcher
     amp_autocast = suppress  # do nothing
     if args.amp:
@@ -132,8 +163,8 @@ def validate(args):
         global_pool=args.gp,
         scriptable=args.torchscript)
 
-    if args.checkpoint:
-        load_checkpoint(model, args.checkpoint, args.use_ema)
+    if checkpoint:
+        load_checkpoint(model, checkpoint, args.use_ema)
 
     param_count = sum([m.numel() for m in model.parameters()])
     _logger.info('Model %s created, param count: %d' % (args.model, param_count))
@@ -155,9 +186,16 @@ def validate(args):
     if args.num_gpu > 1:
         model = torch.nn.DataParallel(model, device_ids=list(range(args.num_gpu)))
 
-    criterion = nn.CrossEntropyLoss().cuda()
+    if args.use_multi_label:
+        criterion = nn.BCEWithLogitsLoss().cuda()
+    else:
+        criterion = nn.CrossEntropyLoss().cuda()
 
-    if os.path.splitext(args.data)[1] == '.tar' and os.path.isfile(args.data):
+    #from torchvision.datasets import ImageNet
+    #dataset = ImageNet(args.data, split='val')
+    if args.use_coco_dataset:
+        dataset = CocoDataset(args.data)
+    elif os.path.splitext(args.data)[1] == '.tar' and os.path.isfile(args.data):
         dataset = DatasetTar(args.data, load_bytes=args.tf_preprocessing, class_map=args.class_map)
     else:
         dataset = Dataset(args.data, load_bytes=args.tf_preprocessing, class_map=args.class_map)
@@ -189,9 +227,6 @@ def validate(args):
         tf_preprocessing=args.tf_preprocessing)
 
     batch_time = AverageMeter()
-    losses = AverageMeter()
-    top1 = AverageMeter()
-    top5 = AverageMeter()
 
     model.eval()
     with torch.no_grad():
@@ -200,6 +235,8 @@ def validate(args):
         if args.channels_last:
             input = input.contiguous(memory_format=torch.channels_last)
         model(input)
+        
+        preds, targets = [], []
         end = time.time()
         for batch_idx, (input, target) in enumerate(loader):
             if args.no_prefetcher:
@@ -220,10 +257,9 @@ def validate(args):
                 real_labels.add_result(output)
 
             # measure accuracy and record loss
-            acc1, acc5 = accuracy(output.detach(), target, topk=(1, 5))
-            losses.update(loss.item(), input.size(0))
-            top1.update(acc1.item(), input.size(0))
-            top5.update(acc5.item(), input.size(0))
+            pred = torch.sigmoid(output)
+            preds.append(pred.cpu().numpy())
+            targets.append(target.cpu().numpy())
 
             # measure elapsed time
             batch_time.update(time.time() - end)
@@ -232,32 +268,21 @@ def validate(args):
             if batch_idx % args.log_freq == 0:
                 _logger.info(
                     'Test: [{0:>4d}/{1}]  '
-                    'Time: {batch_time.val:.3f}s ({batch_time.avg:.3f}s, {rate_avg:>7.2f}/s)  '
-                    'Loss: {loss.val:>7.4f} ({loss.avg:>6.4f})  '
-                    'Acc@1: {top1.val:>7.3f} ({top1.avg:>7.3f})  '
-                    'Acc@5: {top5.val:>7.3f} ({top5.avg:>7.3f})'.format(
-                        batch_idx, len(loader), batch_time=batch_time,
-                        rate_avg=input.size(0) / batch_time.avg,
-                        loss=losses, top1=top1, top5=top5))
+                    'Time: {batch_time.val:.3f}s ({batch_time.avg:.3f}s, {rate_avg:>7.2f}/s)  '.format(
+                        i, len(loader), batch_time=batch_time,
+                        rate_avg=input.size(0) / batch_time.avg
+                    )
+                )
+        
+        preds = np.concatenate(preds)
+        targets = np.concatenate(targets)
+    print(bulk_multi_label_metrics(preds, targets, 0.5))
 
-    if real_labels is not None:
-        # real labels mode replaces topk values at the end
-        top1a, top5a = real_labels.get_accuracy(k=1), real_labels.get_accuracy(k=5)
-    else:
-        top1a, top5a = top1.avg, top5.avg
-    results = OrderedDict(
-        top1=round(top1a, 4), top1_err=round(100 - top1a, 4),
-        top5=round(top5a, 4), top5_err=round(100 - top5a, 4),
-        param_count=round(param_count / 1e6, 2),
-        img_size=data_config['input_size'][-1],
-        cropt_pct=crop_pct,
-        interpolation=data_config['interpolation'])
+    return preds, targets
 
-    _logger.info(' * Acc@1 {:.3f} ({:.3f}) Acc@5 {:.3f} ({:.3f})'.format(
-       results['top1'], results['top1_err'], results['top5'], results['top5_err']))
 
-    return results
-
+def get_metric(predictions, targets):
+    return bulk_multi_label_metrics(predictions, targets, 0.5)
 
 def main():
     setup_default_logging()
@@ -318,6 +343,28 @@ def main():
         validate(args)
 
 
+    preds_list = []
+    for checkpoint in args.checkpoints.split(','):
+        data = torch.load(checkpoint, map_location='cpu')
+        args.model = data['args'].model
+        args.amp   = data['args'].amp
+        args.use_coco_dataset = data['args'].use_coco_dataset
+        args.use_multi_label = data['args'].use_multi_label
+        args.num_classes = data['args'].num_classes
+        args.use_ema = data['args'].model_ema
+        
+        preds, targets = validate(args, data)
+        preds_list.append(preds)
+        
+    preds, predicts = ensemble(preds_list, targets)
+    
+    from sklearn.metrics import f1_score, precision_score, recall_score
+    f1 = f1_score(targets, predicts, average='weighted')
+    print('calibrated_f1: ', f1)
+
+    metric = get_metric(preds, targets)
+    print(metric)
+    
 def write_results(results_file, results):
     with open(results_file, mode='w') as cf:
         dw = csv.DictWriter(cf, fieldnames=results[0].keys())
