@@ -357,6 +357,7 @@ class EfficientNet(nn.Module):
         self.conv_head = create_conv2d(head_chs, self.num_features, 1, padding=pad_type)
         self.bn2 = norm_layer(self.num_features, **norm_kwargs)
         self.act2 = act_layer(inplace=True)
+        self.dropout = nn.Dropout(drop_rate)
         self.global_pool, self.classifier = create_classifier(
             self.num_features, self.num_classes, pool_type=global_pool)
 
@@ -390,8 +391,7 @@ class EfficientNet(nn.Module):
     def forward(self, x):
         x = self.forward_features(x)
         x = self.global_pool(x)
-        if self.drop_rate > 0.:
-            x = F.dropout(x, p=self.drop_rate, training=self.training)
+        x = self.dropout(x)
         return self.classifier(x)
 
 
