@@ -112,16 +112,17 @@ def main():
                 _logger.info('Predict: [{0}/{1}] Time {batch_time.val:.3f} ({batch_time.avg:.3f})'.format(
                     batch_idx, len(loader), batch_time=batch_time))
 
-    topk_ids = np.concatenate(topk_ids, axis=0).squeeze()
+    logits = np.concatenate(logits, axis=0).squeeze()
+    labels = ["can", "plastic", "paper", "vinyl", "normal", "food", "glass", "styrofoam"]
 
-    with open(os.path.join(args.output_dir, './topk_ids.csv'), 'w') as out_file:
-        out_file.write('filename,res\n')
+    with open(os.path.join(args.output_dir, './logits.csv'), 'w') as out_file:
+        out_file.write(','.join(labels) + '\n')
         filenames = loader.dataset.filenames()
-        for filename, label in zip(filenames, topk_ids):
+        for filename, logit in zip(filenames, logits):
             filename = os.path.basename(filename)
 
-            out_file.write('{0},{1}\n'.format(filename, label[0]))
-            out_file.write('{0},{1}\n'.format(filename, label[1]))
+            label = ','.join(map(str, logit))
+            out_file.write('{0},{1}\n'.format(filename, label))
 
 
 if __name__ == '__main__':
