@@ -101,6 +101,32 @@ parser.add_argument('--real-labels', default='', type=str, metavar='FILENAME',
 parser.add_argument('--valid-labels', default='', type=str, metavar='FILENAME',
                     help='Valid label indices txt file for validation of partial label space')
 
+import torch
+import torch.nn as nn
+from copy import deepcopy
+import torch.utils.model_zoo as model_zoo
+import os
+import logging
+from collections import OrderedDict
+from timm.models.layers.conv2d_same import Conv2dSame
+
+def load_state_dict(checkpoint, use_ema=False):
+    state_dict_key = 'state_dict'
+    if isinstance(checkpoint, dict):
+        if use_ema and 'state_dict_ema' in checkpoint:
+            print('using model ema')
+            state_dict_key = 'state_dict_ema'
+    if state_dict_key and state_dict_key in checkpoint:
+        new_state_dict = OrderedDict()
+        for k, v in checkpoint[state_dict_key].items():
+            # strip `module.` prefix
+            name = k[7:] if k.startswith('module') else k
+            new_state_dict[name] = v
+        state_dict = new_state_dict
+    else:
+        state_dict = checkpoint
+    logging.info("Loaded {} from checkpoint".format(state_dict_key))
+    return state_dict
 
 def validate(args):
     # might as well try to validate something
