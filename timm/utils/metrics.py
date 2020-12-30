@@ -30,3 +30,23 @@ def accuracy(output, target, topk=(1,)):
     pred = pred.t()
     correct = pred.eq(target.view(1, -1).expand_as(pred))
     return [correct[:k].view(-1).float().sum(0) * 100. / batch_size for k in topk]
+
+def precision_recall(output, target, threshold=0.5):
+    from sklearn.metrics import precision_score, recall_score, f1_score
+
+    pred = (output > threshold).cpu().long().numpy()
+    target = target.cpu().long().numpy()
+
+    return (
+        precision_score(target, pred, average='weighted'),
+        recall_score(target, pred, average='weighted'),
+    )
+
+def bulk_multi_label_metrics(output_bulk, target_bulk, threshold=0.5):
+    from sklearn.metrics import average_precision_score, precision_score, recall_score, f1_score
+
+    return {
+        ('ap', 'AP'): average_precision_score(target_bulk, output_bulk, average='weighted'),
+        ('f1', 'F1'): f1_score(target_bulk, output_bulk > 0.5, average='weighted'),
+    }
+

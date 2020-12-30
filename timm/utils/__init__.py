@@ -1,9 +1,9 @@
 from .checkpoint_saver import CheckpointSaver
 from .cuda import ApexScaler, NativeScaler
-from .distributed import distribute_bn, reduce_tensor
+from .distributed import distribute_bn, reduce_tensor, gather_tensor
 from .jit import set_jit_legacy
 from .log import setup_default_logging, FormatterNoInfo
-from .metrics import AverageMeter, accuracy
+from .metrics import AverageMeter, accuracy, bulk_multi_label_metrics, precision_recall
 from .misc import natural_key, add_bool_arg
 from .model import unwrap_model, get_state_dict
 from .model_ema import ModelEma
