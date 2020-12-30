@@ -132,9 +132,9 @@ def load_checkpoint(model, checkpoint, use_ema=False, strict=True):
     state_dict = load_state_dict(checkpoint, use_ema)
     model.load_state_dict(state_dict, strict=strict)
 
-def validate(args):
+def validate(args, checkpoint=None):
     # might as well try to validate something
-    args.pretrained = args.pretrained or not args.checkpoint
+    args.pretrained = args.pretrained or not checkpoint
     args.prefetcher = not args.no_prefetcher
     amp_autocast = suppress  # do nothing
     if args.amp:
@@ -160,7 +160,7 @@ def validate(args):
         global_pool=args.gp,
         scriptable=args.torchscript)
 
-    if args.checkpoint:
+    if checkpoint:
         load_checkpoint(model, args.checkpoint, args.use_ema)
 
     param_count = sum([m.numel() for m in model.parameters()])
