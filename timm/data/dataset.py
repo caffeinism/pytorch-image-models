@@ -216,6 +216,32 @@ class AugMixDataset(torch.utils.data.Dataset):
 
     
 class CocoDataset(data.Dataset):
+    def _get_class_to_idx_from_annotation(self, annotation):
+        assert 'categories' in annotation, 'wrong coco annotation format'
+
+        return {
+            it['name']: it['id'] for it in annotation['categories']
+        }
+
+
+    def _get_samples_from_annotation(self, annotation, base_path=''):
+        assert 'images' in annotation, 'wrong coco annotation format'
+        assert 'annotations' in annotation, 'wrong coco annotation format'
+
+        image_label_dict = defaultdict(list)
+
+        for it in annotation['annotations']:
+            category_id = it['category_id']
+            image_id = it['image_id']
+
+            image_label_dict[image_id].append(category_id)
+
+        return [
+            (
+                os.path.join(base_path, it['file_name']), tuple(set(image_label_dict[it['id']]))
+            ) for it in annotation['images']
+        ]
+
     def __init__(
         self,
         root,
@@ -226,7 +252,16 @@ class CocoDataset(data.Dataset):
         self.root = root
         self.load_bytes = load_bytes
         self.transform = transform
-    
+
+        data_base_path = os.path.join(root, 'data/')
+        annotation_file_path = os.path.join(root, 'annotations.json')
+
+        with open(annotation_file_path, 'r') as fp:
+            annotation = json.loads(fp.read())
+
+        self.class_to_idx = self._get_class_to_idx_from_annotation(annotation)
+        self.samples = self._get_samples_from_annotation(annotation, base_path=data_base_path)
+
     def __getitem__(self, index):
         pass
 
