@@ -161,7 +161,7 @@ def validate(args, checkpoint=None):
         scriptable=args.torchscript)
 
     if checkpoint:
-        load_checkpoint(model, args.checkpoint, args.use_ema)
+        load_checkpoint(model, checkpoint, args.use_ema)
 
     param_count = sum([m.numel() for m in model.parameters()])
     _logger.info('Model %s created, param count: %d' % (args.model, param_count))
@@ -183,7 +183,10 @@ def validate(args, checkpoint=None):
     if args.num_gpu > 1:
         model = torch.nn.DataParallel(model, device_ids=list(range(args.num_gpu)))
 
-    criterion = nn.CrossEntropyLoss().cuda()
+    if args.use_multi_label:
+        criterion = nn.BCEWithLogitsLoss().cuda()
+    else:
+        criterion = nn.CrossEntropyLoss().cuda()
 
     if os.path.splitext(args.data)[1] == '.tar' and os.path.isfile(args.data):
         dataset = DatasetTar(args.data, load_bytes=args.tf_preprocessing, class_map=args.class_map)
