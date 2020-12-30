@@ -540,7 +540,7 @@ def main():
     best_epoch = None
     saver = None
     output_dir = ''
-    if args.local_rank == 0:
+    if args.rank == 0:
         output_base = args.output if args.output else './output'
         exp_name = '-'.join([
             datetime.now().strftime("%Y%m%d-%H%M%S"),
