@@ -188,7 +188,9 @@ def validate(args, checkpoint=None):
     else:
         criterion = nn.CrossEntropyLoss().cuda()
 
-    if os.path.splitext(args.data)[1] == '.tar' and os.path.isfile(args.data):
+    if args.use_coco_dataset:
+        dataset = CocoDataset(args.data)
+    elif os.path.splitext(args.data)[1] == '.tar' and os.path.isfile(args.data):
         dataset = DatasetTar(args.data, load_bytes=args.tf_preprocessing, class_map=args.class_map)
     else:
         dataset = Dataset(args.data, load_bytes=args.tf_preprocessing, class_map=args.class_map)
