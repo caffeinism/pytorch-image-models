@@ -16,12 +16,14 @@ import logging
 import torch
 import torch.nn as nn
 import torch.nn.parallel
+import numpy as np
 from collections import OrderedDict
 from contextlib import suppress
+from ensemble import ensemble
 
 from timm.models import create_model, apply_test_time_pool, load_checkpoint, is_model, list_models
-from timm.data import Dataset, DatasetTar, create_loader, resolve_data_config, RealLabelsImagenet
-from timm.utils import accuracy, AverageMeter, natural_key, setup_default_logging, set_jit_legacy
+from timm.data import CocoDataset, Dataset, DatasetTar, create_loader, resolve_data_config, RealLabelsImagenet
+from timm.utils import bulk_multi_label_metrics, accuracy, AverageMeter, natural_key, setup_default_logging, set_jit_legacy
 
 has_apex = False
 try:
@@ -68,7 +70,7 @@ parser.add_argument('--gp', default=None, type=str, metavar='POOL',
                     help='Global pool type, one of (fast, avg, max, avgmax, avgmaxc). Model default if None.')
 parser.add_argument('--log-freq', default=10, type=int,
                     metavar='N', help='batch logging frequency (default: 10)')
-parser.add_argument('--checkpoint', default='', type=str, metavar='PATH',
+parser.add_argument('--checkpoints', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 parser.add_argument('--pretrained', dest='pretrained', action='store_true',
                     help='use pre-trained model')
