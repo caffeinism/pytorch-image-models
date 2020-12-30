@@ -213,3 +213,26 @@ class AugMixDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.dataset)
+
+    
+class CocoDataset(data.Dataset):
+    def __init__(
+        self,
+        root,
+        load_bytes=False,
+        transform=None,
+        **_,
+    ):
+        self.root = root
+        self.load_bytes = load_bytes
+        self.transform = transform
+    
+    def __getitem__(self, index):
+        pass
+
+    def __len__(self):
+        pass
+    
+    def filenames(self, indices=[], basename=False):
+        pass
+
