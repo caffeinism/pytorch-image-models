@@ -289,3 +289,31 @@ class CocoDataset(data.Dataset):
             else:
                 return [x[0] for x in self.samples] 
 
+class MultiLabelDataset(data.Dataset):
+    def __init__(
+        self,
+        root,
+        transform=None,
+        **_,
+    ):
+        self.root = root
+        self.transform = transform
+
+
+    def __getitem__(self, index):
+        pass
+
+    def __len__(self):
+        pass
+
+    def filenames(self, indices=[], basename=False):
+        if indices:
+            if basename:
+                return [os.path.basename(self.samples[i][0]) for i in indices]
+            else:
+                return [self.samples[i][0] for i in indices]
+        else:
+            if basename:
+                return [os.path.basename(x[0]) for x in self.samples]
+            else:
+                return [x[0] for x in self.samples]
