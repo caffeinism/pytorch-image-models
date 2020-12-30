@@ -28,7 +28,7 @@ import torch.nn as nn
 import torchvision.utils
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
 
-from timm.data import CocoDataset, Dataset, create_loader, resolve_data_config, Mixup, FastCollateMixup, AugMixDataset
+from timm.data import MultiLabelDataset, CocoDataset, Dataset, create_loader, resolve_data_config, Mixup, FastCollateMixup, AugMixDataset
 from timm.models import create_model, resume_checkpoint, convert_splitbn_model
 from timm.utils import *
 from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy, JsdCrossEntropy
@@ -256,8 +256,8 @@ parser.add_argument("--local_rank", default=0, type=int)
 parser.add_argument('--use-multi-epochs-loader', action='store_true', default=False,
                     help='use the multi-epochs-loader to save time at the beginning of every epoch')
 
-parser.add_argument('--use-coco-dataset', action='store_true', default=False,
-                    help='Use coco-formated dataset')
+parser.add_argument('--dataset-type', default='multi', type=str, choices=['multi', 'coco', 'default'],
+                    help='Choose dataset type')
 parser.add_argument('--use-multi-label', action='store_true', default=False,
                     help='Train with multi-label classification datasets')
 
@@ -447,7 +447,15 @@ def main():
     if not os.path.exists(train_dir):
         _logger.error('Training folder does not exist at: {}'.format(train_dir))
         exit(1)
-    dataset_train = Dataset(train_dir) if not args.use_coco_dataset else CocoDataset(train_dir)
+
+    if args.dataset_type == 'default':
+        dataset_train = Dataset(train_dir)
+    elif args.dataset_type == 'coco':
+        dataset_train = CocoDataset(train_dir)
+    elif args.dataset_type == 'multi':
+        dataset_train = MultiLabelDataset(train_dir)
+    else:
+        raise NotImplemented
 
     collate_fn = None
     mixup_fn = None
@@ -503,7 +511,15 @@ def main():
         if not os.path.isdir(eval_dir):
             _logger.error('Validation folder does not exist at: {}'.format(eval_dir))
             exit(1)
-    dataset_eval = Dataset(eval_dir) if not args.use_coco_dataset else CocoDataset(eval_dir)
+
+    if args.dataset_type == 'default':
+        dataset_eval = Dataset(eval_dir)
+    elif args.dataset_type == 'coco':
+        dataset_eval = CocoDataset(eval_dir)
+    elif args.dataset_type == 'multi':
+        dataset_eval = MultiLabelDataset(eval_dir)
+    else:
+        raise NotImplemented
 
     loader_eval = create_loader(
         dataset_eval,
