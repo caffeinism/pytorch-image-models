@@ -263,7 +263,16 @@ class CocoDataset(data.Dataset):
         self.samples = self._get_samples_from_annotation(annotation, base_path=data_base_path)
 
     def __getitem__(self, index):
-        pass
+        path, target = self.samples[index]
+        img = open(path, 'rb').read() if self.load_bytes else Image.open(path).convert('RGB')
+        if self.transform is not None:
+            img = self.transform(img)
+
+        label = np.zeros(len(self.class_to_idx))
+        for t in target:
+            label[t] = 1.0
+
+        return img, label
 
     def __len__(self):
         pass
