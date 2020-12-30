@@ -11,6 +11,7 @@ import argparse
 import logging
 import numpy as np
 import torch
+import torch.nn as nn
 
 from timm.models import create_model, apply_test_time_pool
 from timm.data import Dataset, create_loader, resolve_data_config
@@ -96,13 +97,12 @@ def main():
     k = min(args.topk, args.num_classes)
     batch_time = AverageMeter()
     end = time.time()
-    topk_ids = []
+    logits = []
     with torch.no_grad():
         for batch_idx, (input, _) in enumerate(loader):
             input = input.cuda()
             labels = model(input)
-            topk = labels.topk(k)[1]
-            topk_ids.append(topk.cpu().numpy())
+            logits.append(torch.sigmoid(labels).cpu().numpy())
 
             # measure elapsed time
             batch_time.update(time.time() - end)
