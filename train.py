@@ -28,7 +28,7 @@ import torch.nn as nn
 import torchvision.utils
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
 
-from timm.data import Dataset, create_loader, resolve_data_config, Mixup, FastCollateMixup, AugMixDataset
+from timm.data import CocoDataset, Dataset, create_loader, resolve_data_config, Mixup, FastCollateMixup, AugMixDataset
 from timm.models import create_model, resume_checkpoint, convert_splitbn_model
 from timm.utils import *
 from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy, JsdCrossEntropy
@@ -256,6 +256,11 @@ parser.add_argument("--local_rank", default=0, type=int)
 parser.add_argument('--use-multi-epochs-loader', action='store_true', default=False,
                     help='use the multi-epochs-loader to save time at the beginning of every epoch')
 
+parser.add_argument('--use-coco-dataset', action='store_true', default=False,
+                    help='Use coco-formated dataset')
+parser.add_argument('--use-multi-label', action='store_true', default=False,
+                    help='Train with multi-label classification datasets')
+
 
 def _parse_args():
     # Do we have a config file to parse?
@@ -442,7 +447,7 @@ def main():
     if not os.path.exists(train_dir):
         _logger.error('Training folder does not exist at: {}'.format(train_dir))
         exit(1)
-    dataset_train = Dataset(train_dir)
+    dataset_train = Dataset(train_dir) if not args.use_coco_dataset else CocoDataset(train_dir)
 
     collate_fn = None
     mixup_fn = None
@@ -498,7 +503,7 @@ def main():
         if not os.path.isdir(eval_dir):
             _logger.error('Validation folder does not exist at: {}'.format(eval_dir))
             exit(1)
-    dataset_eval = Dataset(eval_dir)
+    dataset_eval = Dataset(eval_dir) if not args.use_coco_dataset else CocoDataset(eval_dir)
 
     loader_eval = create_loader(
         dataset_eval,
@@ -515,7 +520,10 @@ def main():
         pin_memory=args.pin_mem,
     )
 
-    if args.jsd:
+    if args.use_multi_label:
+        train_loss_fn = nn.BCEWithLogitsLoss().cuda()
+        validate_loss_fn = train_loss_fn
+    elif args.jsd:
         assert num_aug_splits > 1  # JSD only valid with aug splits set
         train_loss_fn = JsdCrossEntropy(num_splits=num_aug_splits, smoothing=args.smoothing).cuda()
     elif mixup_active:
@@ -693,11 +701,12 @@ def train_epoch(
     return OrderedDict([('loss', losses_m.avg)])
 
 
+from collections import defaultdict
 def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix=''):
     batch_time_m = AverageMeter()
     losses_m = AverageMeter()
-    top1_m = AverageMeter()
-    top5_m = AverageMeter()
+    
+    metric_meter = defaultdict(AverageMeter)
 
     model.eval()
 
@@ -724,35 +733,52 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
                 target = target[0:target.size(0):reduce_factor]
 
             loss = loss_fn(output, target)
-            acc1, acc5 = accuracy(output, target, topk=(1, 5))
-
+            
+            if not args.use_multi_label:
+                acc1, acc5 = accuracy(output, target, topk=(1, 5))
+                metric = {
+                    ('top1', 'Acc@1'): acc1,
+                    ('top5', 'Acc@5'): acc5,
+                }
+            else:
+                precision, recall = precision_recall(output, target, threshold=0.5)
+                metric = {
+                    ('precision', 'Precision'): precision,
+                    ('recall', 'Recall'): recall,
+                }
+                
             if args.distributed:
                 reduced_loss = reduce_tensor(loss.data, args.world_size)
-                acc1 = reduce_tensor(acc1, args.world_size)
-                acc5 = reduce_tensor(acc5, args.world_size)
+                metric = {key: reduce_tensor(value, args.world_size) for key, value in metric.items()}
             else:
                 reduced_loss = loss.data
 
             torch.cuda.synchronize()
 
             losses_m.update(reduced_loss.item(), input.size(0))
-            top1_m.update(acc1.item(), output.size(0))
-            top5_m.update(acc5.item(), output.size(0))
+
+            for (metric_name, _), item in metric.items():
+                metric_meter[metric_name].update(item.item(), output.size(0))
 
             batch_time_m.update(time.time() - end)
             end = time.time()
             if args.local_rank == 0 and (last_batch or batch_idx % args.log_interval == 0):
                 log_name = 'Test' + log_suffix
-                _logger.info(
+                log_text = (
                     '{0}: [{1:>4d}/{2}]  '
                     'Time: {batch_time.val:.3f} ({batch_time.avg:.3f})  '
-                    'Loss: {loss.val:>7.4f} ({loss.avg:>6.4f})  '
-                    'Acc@1: {top1.val:>7.4f} ({top1.avg:>7.4f})  '
-                    'Acc@5: {top5.val:>7.4f} ({top5.avg:>7.4f})'.format(
+                    'Loss: {loss.val:>7.4f} ({loss.avg:>6.4f})  '.format(
                         log_name, batch_idx, last_idx, batch_time=batch_time_m,
-                        loss=losses_m, top1=top1_m, top5=top5_m))
+                        loss=losses_m,
+                    )
+                )
+                
+                for (metric_name, title), meter in metric.items():
+                    log_text += '{title}: {meter.val:>7.4f} ({meter.avg:>7.4f})  '.format(title=title, meter=metric_meter[metric_name])
 
-    metrics = OrderedDict([('loss', losses_m.avg), ('top1', top1_m.avg), ('top5', top5_m.avg)])
+                _logger.info(log_text)
+                    
+    metrics = OrderedDict([('loss', losses_m.avg), *[(metric_name, meter.avg) for metric_name, meter in metric_meter.items()]])
 
     return metrics
 
