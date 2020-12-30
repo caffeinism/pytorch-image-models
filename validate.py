@@ -331,6 +331,28 @@ def main():
     else:
         validate(args)
 
+    preds_list = []
+    for checkpoint in args.checkpoints.split(','):
+        data = torch.load(checkpoint, map_location='cpu')
+        args.model = data['args'].model
+        args.amp   = data['args'].amp
+        args.use_coco_dataset = data['args'].use_coco_dataset
+        args.use_multi_label = data['args'].use_multi_label
+        args.num_classes = data['args'].num_classes
+        args.use_ema = data['args'].model_ema
+
+        preds, targets = validate(args, data)
+        preds_list.append(preds)
+
+    preds, predicts = ensemble(preds_list, targets)
+
+    from sklearn.metrics import f1_score, precision_score, recall_score
+    f1 = f1_score(targets, predicts, average='weighted')
+    print('calibrated_f1: ', f1)
+
+    metric = get_metric(preds, targets)
+    print(metric)
+
 
 def write_results(results_file, results):
     with open(results_file, mode='w') as cf:
