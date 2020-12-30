@@ -275,8 +275,17 @@ class CocoDataset(data.Dataset):
         return img, label
 
     def __len__(self):
-        pass
+        return len(self.samples)
     
     def filenames(self, indices=[], basename=False):
-        pass
+        if indices:
+            if basename:
+                return [os.path.basename(self.samples[i][0]) for i in indices]
+            else:
+                return [self.samples[i][0] for i in indices]
+        else:
+            if basename:
+                return [os.path.basename(x[0]) for x in self.samples]
+            else:
+                return [x[0] for x in self.samples] 
 
