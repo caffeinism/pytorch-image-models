@@ -290,6 +290,24 @@ class CocoDataset(data.Dataset):
                 return [x[0] for x in self.samples] 
 
 class MultiLabelDataset(data.Dataset):
+    def _get_class_to_idx_from_annotation(self, annotation):
+        assert 'classes' in annotation, 'wrong format'
+
+        return {
+            it['classname']: it['class_idx'] for it in annotation['classes']
+        }
+
+
+    def _get_samples_from_annotation(self, annotation, base_path=''):
+        assert 'images' in annotation, 'wrong format'
+        assert 'annotations' in annotation, 'wrong format'
+
+        images = {image['image_idx']: {'filename': image['filename'], 'label': [0] * len(annotation['classes'])} for image in annotation['images']}
+        for it in annotation['annotations']:
+            images[it['image_idx']]['label'][it['class_idx']] = 1
+
+        return [(it['filename'], it['label']) for it in images.values()]
+
     def __init__(
         self,
         root,
@@ -299,12 +317,25 @@ class MultiLabelDataset(data.Dataset):
         self.root = root
         self.transform = transform
 
+        data_base_path = os.path.join(root, 'data/')
+        annotation_file_path = os.path.join(root, 'annotations.json')
+
+        with open(annotation_file_path, 'r') as fp:
+            annotation = json.loads(fp.read())
+
+        self.class_to_idx = self._get_class_to_idx_from_annotation(annotation)
+        self.samples = self._get_samples_from_annotation(annotation, base_path=data_base_path)
 
     def __getitem__(self, index):
-        pass
+        path, label = self.samples[index]
+        img = Image.open(os.path.join(self.root, 'data', path)).convert('RGB')
+        if self.transform is not None:
+            img = self.transform(img)
+
+        return img, np.array(label)
 
     def __len__(self):
-        pass
+        return len(self.samples)
 
     def filenames(self, indices=[], basename=False):
         if indices:
