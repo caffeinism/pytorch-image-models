@@ -128,6 +128,10 @@ def load_state_dict(checkpoint, use_ema=False):
     logging.info("Loaded {} from checkpoint".format(state_dict_key))
     return state_dict
 
+def load_checkpoint(model, checkpoint, use_ema=False, strict=True):
+    state_dict = load_state_dict(checkpoint, use_ema)
+    model.load_state_dict(state_dict, strict=strict)
+
 def validate(args):
     # might as well try to validate something
     args.pretrained = args.pretrained or not args.checkpoint
