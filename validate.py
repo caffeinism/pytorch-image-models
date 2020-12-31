@@ -19,10 +19,10 @@ import torch.nn.parallel
 import numpy as np
 from collections import OrderedDict
 from contextlib import suppress
-from ensemble import ensemble
+from ensemble import ensemble, calibrate
 
 from timm.models import create_model, apply_test_time_pool, load_checkpoint, is_model, list_models
-from timm.data import CocoDataset, Dataset, DatasetTar, create_loader, resolve_data_config, RealLabelsImagenet
+from timm.data import MultiLabelDataset, CocoDataset, Dataset, DatasetTar, create_loader, resolve_data_config, RealLabelsImagenet
 from timm.utils import bulk_multi_label_metrics, accuracy, AverageMeter, natural_key, setup_default_logging, set_jit_legacy
 
 has_apex = False
@@ -110,6 +110,7 @@ import logging
 from collections import OrderedDict
 from timm.models.layers.conv2d_same import Conv2dSame
 
+
 def load_state_dict(checkpoint, use_ema=False):
     state_dict_key = 'state_dict'
     if isinstance(checkpoint, dict):
@@ -128,10 +129,12 @@ def load_state_dict(checkpoint, use_ema=False):
     logging.info("Loaded {} from checkpoint".format(state_dict_key))
     return state_dict
 
+
 def load_checkpoint(model, checkpoint, use_ema=False, strict=True):
     state_dict = load_state_dict(checkpoint, use_ema)
     model.load_state_dict(state_dict, strict=strict)
-
+    
+    
 def validate(args, checkpoint=None):
     # might as well try to validate something
     args.pretrained = args.pretrained or not checkpoint
@@ -188,12 +191,16 @@ def validate(args, checkpoint=None):
     else:
         criterion = nn.CrossEntropyLoss().cuda()
 
-    if args.use_coco_dataset:
+    #from torchvision.datasets import ImageNet
+    #dataset = ImageNet(args.data, split='val')
+    if args.dataset_type == 'default':
+        dataset = Dataset(args.data)
+    elif args.dataset_type == 'coco':
         dataset = CocoDataset(args.data)
-    elif os.path.splitext(args.data)[1] == '.tar' and os.path.isfile(args.data):
-        dataset = DatasetTar(args.data, load_bytes=args.tf_preprocessing, class_map=args.class_map)
+    elif args.dataset_type == 'multi':
+        dataset = MultiLabelDataset(args.data)
     else:
-        dataset = Dataset(args.data, load_bytes=args.tf_preprocessing, class_map=args.class_map)
+        raise NotImplemented
 
     if args.valid_labels:
         with open(args.valid_labels, 'r') as f:
@@ -230,6 +237,8 @@ def validate(args, checkpoint=None):
         if args.channels_last:
             input = input.contiguous(memory_format=torch.channels_last)
         model(input)
+        
+        preds, targets = [], []
         end = time.time()
         for batch_idx, (input, target) in enumerate(loader):
             if args.no_prefetcher:
@@ -250,6 +259,9 @@ def validate(args, checkpoint=None):
                 real_labels.add_result(output)
 
             # measure accuracy and record loss
+            pred = torch.sigmoid(output)
+            preds.append(pred.cpu().numpy())
+            targets.append(target.cpu().numpy())
 
             # measure elapsed time
             batch_time.update(time.time() - end)
@@ -259,101 +271,72 @@ def validate(args, checkpoint=None):
                 _logger.info(
                     'Test: [{0:>4d}/{1}]  '
                     'Time: {batch_time.val:.3f}s ({batch_time.avg:.3f}s, {rate_avg:>7.2f}/s)  '.format(
-                        i, len(loader), batch_time=batch_time,
+                        batch_idx, len(loader), batch_time=batch_time,
                         rate_avg=input.size(0) / batch_time.avg
                     )
                 )
-
+        
         preds = np.concatenate(preds)
         targets = np.concatenate(targets)
-    print(bulk_multi_label_metrics(preds, targets, 0.5))
 
     return preds, targets
+
 
 def get_metric(predictions, targets):
     return bulk_multi_label_metrics(predictions, targets, 0.5)
 
+from sklearn.metrics import f1_score, precision_score, recall_score
 def main():
     setup_default_logging()
     args = parser.parse_args()
-    model_cfgs = []
-    model_names = []
-    if os.path.isdir(args.checkpoint):
-        # validate all checkpoints in a path with same model
-        checkpoints = glob.glob(args.checkpoint + '/*.pth.tar')
-        checkpoints += glob.glob(args.checkpoint + '/*.pth')
-        model_names = list_models(args.model)
-        model_cfgs = [(args.model, c) for c in sorted(checkpoints, key=natural_key)]
-    else:
-        if args.model == 'all':
-            # validate all models in a list of names with pretrained checkpoints
-            args.pretrained = True
-            model_names = list_models(pretrained=True)
-            model_cfgs = [(n, '') for n in model_names]
-        elif not is_model(args.model):
-            # model name doesn't exist, try as wildcard filter
-            model_names = list_models(args.model)
-            model_cfgs = [(n, '') for n in model_names]
 
-    if len(model_cfgs):
-        results_file = args.results_file or './results-all.csv'
-        _logger.info('Running bulk validation on these pretrained models: {}'.format(', '.join(model_names)))
-        results = []
-        try:
-            start_batch_size = args.batch_size
-            for m, c in model_cfgs:
-                batch_size = start_batch_size
-                args.model = m
-                args.checkpoint = c
-                result = OrderedDict(model=args.model)
-                r = {}
-                while not r and batch_size >= args.num_gpu:
-                    torch.cuda.empty_cache()
-                    try:
-                        args.batch_size = batch_size
-                        print('Validating with batch size: %d' % args.batch_size)
-                        r = validate(args)
-                    except RuntimeError as e:
-                        if batch_size <= args.num_gpu:
-                            print("Validation failed with no ability to reduce batch size. Exiting.")
-                            raise e
-                        batch_size = max(batch_size // 2, args.num_gpu)
-                        print("Validation failed, reducing batch size by 50%")
-                result.update(r)
-                if args.checkpoint:
-                    result['checkpoint'] = args.checkpoint
-                results.append(result)
-        except KeyboardInterrupt as e:
-            pass
-        results = sorted(results, key=lambda x: x['top1'], reverse=True)
-        if len(results):
-            write_results(results_file, results)
-    else:
-        validate(args)
-
+    data_dir = args.data
+    
     preds_list = []
+    args.data = os.path.join(data_dir, 'val')
+    for checkpoint in args.checkpoints.split(','):
+        data = torch.load(checkpoint, map_location='cpu')
+        
+        args.model = data['args'].model
+        args.amp   = data['args'].amp
+        args.dataset_type = data['args'].dataset_type
+        args.use_multi_label = data['args'].use_multi_label
+        args.num_classes = data['args'].num_classes
+        args.use_ema = data['args'].model_ema
+        
+        preds, targets = validate(args, data)
+        preds_list.append(preds)
+        
+    thresholds = calibrate(preds_list, targets)
+    print('thresholds: ', thresholds)
+    preds, predicts = ensemble(preds_list, targets, thresholds=thresholds)
+    f1 = f1_score(targets, predicts, average='macro')
+    print('calibrated_f1_in_val: ', f1)
+    metric = get_metric(preds, targets)
+    print('metric_in_val:', metric)
+    
+    preds_list = []
+    args.data = os.path.join(data_dir, 'test')
     for checkpoint in args.checkpoints.split(','):
         data = torch.load(checkpoint, map_location='cpu')
         args.model = data['args'].model
         args.amp   = data['args'].amp
-        args.use_coco_dataset = data['args'].use_coco_dataset
+        args.dataset_type = data['args'].dataset_type
         args.use_multi_label = data['args'].use_multi_label
         args.num_classes = data['args'].num_classes
         args.use_ema = data['args'].model_ema
-
+        
         preds, targets = validate(args, data)
         preds_list.append(preds)
-
-    preds, predicts = ensemble(preds_list, targets)
-
-    from sklearn.metrics import f1_score, precision_score, recall_score
-    f1 = f1_score(targets, predicts, average='weighted')
+    
+    preds, predicts = ensemble(preds_list, targets, thresholds=thresholds)
+    
+    f1 = f1_score(targets, predicts, average='macro')
     print('calibrated_f1: ', f1)
 
     metric = get_metric(preds, targets)
     print(metric)
-
-
+    
 def write_results(results_file, results):
     with open(results_file, mode='w') as cf:
         dw = csv.DictWriter(cf, fieldnames=results[0].keys())
