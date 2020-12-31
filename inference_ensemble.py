@@ -11,15 +11,10 @@ import argparse
 import logging
 import numpy as np
 import torch
-from ensemble import ensemble
 from collections import OrderedDict
 import torch.nn as nn
-
-try:
-    from apex import amp
-    has_apex = True
-except ImportError:
-    has_apex = False
+import json
+import ttach as tta
 
 from timm.models import create_model, apply_test_time_pool, is_model, list_models,\
     set_scriptable, set_no_jit
@@ -27,6 +22,7 @@ from timm.data import CocoDataset, Dataset, DatasetTar, create_loader, resolve_d
 from timm.utils import bulk_multi_label_metrics, accuracy, AverageMeter, natural_key, setup_default_logging
 
 torch.backends.cudnn.benchmark = True
+
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Inference')
 parser.add_argument('data', metavar='DIR',
@@ -37,7 +33,7 @@ parser.add_argument('-j', '--workers', default=2, type=int, metavar='N',
                     help='number of data loading workers (default: 2)')
 parser.add_argument('-b', '--batch-size', default=32, type=int,
                     metavar='N', help='mini-batch size (default: 256)')
-parser.add_argument('--img-size', default=None, type=int,
+parser.add_argument('--img-size', default=912, type=int,
                     metavar='N', help='Input image dimension')
 parser.add_argument('--mean', type=float, nargs='+', default=None, metavar='MEAN',
                     help='Override mean pixel value of dataset')
@@ -47,7 +43,7 @@ parser.add_argument('--interpolation', default='', type=str, metavar='NAME',
                     help='Image resize interpolation type (overrides model)')
 parser.add_argument('--log-freq', default=10, type=int,
                     metavar='N', help='batch logging frequency (default: 10)')
-parser.add_argument('--checkpoints', default='', type=str, metavar='PATH',
+parser.add_argument('--checkpoints', default='/checkpoints/checkpoint-1.pth.tar,/checkpoints/checkpoint-2.pth.tar', type=str, metavar='PATH',
                     help='comma seperated paths to latest checkpoint (default: none)')
 parser.add_argument('--pretrained', dest='pretrained', action='store_true',
                     help='use pre-trained model')
@@ -57,7 +53,7 @@ parser.add_argument('--no-test-pool', dest='no_test_pool', action='store_true',
                     help='disable test time pool')
 parser.add_argument('--topk', default=5, type=int,
                     metavar='N', help='Top-k to output to CSV')
-parser.add_argument('--crop-pct', default=None, type=float,
+parser.add_argument('--crop-pct', default=1.0, type=float,
                     metavar='N', help='Input image center crop percent (for validation only)')
 
 
@@ -85,9 +81,7 @@ def load_checkpoint(model, checkpoint, use_ema=False, strict=True):
     model.load_state_dict(state_dict, strict=strict)
 
 
-def inference(args, checkpoint=None):
-    args.pretrained = args.pretrained or not args.checkpoints
-
+def get_model(args, checkpoint):
     # create model
     model = create_model(
         args.model,
@@ -104,20 +98,49 @@ def inference(args, checkpoint=None):
 
     config = resolve_data_config(vars(args), model=model)
     model, test_time_pool = (model, False) if args.no_test_pool else apply_test_time_pool(model, config)
+    
+    model = model.cuda()
+    model.eval()
+    
+    return model, config
+def inference(args, checkpoints=list()):
+    args.pretrained = False
 
-    if args.amp:
-        model = amp.initialize(model.cuda(), opt_level='O1')
-    else:
-        model = model.cuda()
+    models = []
+    for checkpoint in checkpoints:
+        data = torch.load(checkpoint, map_location='cpu')
+        args.model = data['args'].model
+        args.use_multi_label = data['args'].use_multi_label
+        args.num_classes = data['args'].num_classes
+        args.use_ema = data['args'].model_ema
 
-    if args.num_gpu > 1:
-        model = torch.nn.DataParallel(model, device_ids=list(range(args.num_gpu)))
+        model, config = get_model(args, data)
+        models.append(model)
+        
+    tta_model = tta.ClassificationTTAWrapper(
+        models=[torch.nn.Sequential(
+            model,
+            torch.nn.Sigmoid(),
+        ) for model in models],
+        transforms=tta.Compose(
+            [
+                tta.FiveCrops(args.img_size, args.img_size),
+                tta.HorizontalFlip(),
+#                 tta.Rotate90(angles=[0, 90, 180, 270]),
+#                 tta.Scale(scales=[1, 2, 4]),
+#                 tta.Multiply(factors=[0.9, 1, 1.1]),        
+            ]
+        ),
+        merge_mode='max',
+    )
+
 
     if args.use_multi_label:
         criterion = nn.BCEWithLogitsLoss().cuda()
     else:
         criterion = nn.CrossEntropyLoss().cuda()
 
+    config['input_size'] = (720, 1280)
     loader = create_loader(
         Dataset(args.data),
         input_size=config['input_size'],
@@ -127,20 +150,18 @@ def inference(args, checkpoint=None):
         mean=config['mean'],
         std=config['std'],
         num_workers=args.workers,
-        crop_pct=args.crop_pct)
-
-    model.eval()
+        crop_pct=1)
 
     k = min(args.topk, args.num_classes)
     batch_time = AverageMeter()
     end = time.time()
 
-    logits = []
+    preds = []
     with torch.no_grad():
         for batch_idx, (input, _) in enumerate(loader):
             input = input.cuda()
             output = model(input)
-            logits.append(torch.sigmoid(output).cpu().numpy())
+            preds.append(output.cpu().numpy())
 
             # measure elapsed time
             batch_time.update(time.time() - end)
@@ -150,38 +171,35 @@ def inference(args, checkpoint=None):
                 logging.info('Predict: [{0}/{1}] Time {batch_time.val:.3f} ({batch_time.avg:.3f})'.format(
                         batch_idx, len(loader), batch_time=batch_time))
 
-    logits = np.concatenate(logits, axis=0)
-    
+    preds = np.concatenate(preds, axis=0)
+
     filenames = loader.dataset.filenames()
-    
-    return logits, filenames
-            
+
+    return preds, filenames
+
 def main():
     setup_default_logging()
     args = parser.parse_args()
+    
+    preds, filenames = inference(args, args.checkpoints.split(','))    
+    thresholds=np.array([[0.65, 0.15, 0.75, 0.6,  0.45, 0.75, 0.85]])
+    
+    predictions = preds > thresholds
 
-    logits_list = []
-    for checkpoint in args.checkpoints.split(','):
-        data = torch.load(checkpoint, map_location='cpu')
-        args.model = data['args'].model
-        args.amp   = data['args'].amp
-        args.use_multi_label = data['args'].use_multi_label
-        args.num_classes = data['args'].num_classes
-        args.use_ema = data['args'].model_ema
-        
-        logits, filenames = inference(args, data)
-        logits_list.append(logits)
-
-    _, predictions = ensemble(logits_list, thresholds=np.array([0.25, 0.15, 0.4,  0.35, 0.4,  0.55, 0.75]))
-    labels = ["can", "plastic", "paper", "vinyl", "normal", "food", "glass", "styrofoam"]
-    with open(os.path.join(args.output_dir, './predictions.csv'), 'w') as out_file:
-        out_file.write('filename' + ',' + ','.join(labels) + '\n')
-        for filename, prediction in zip(filenames, predictions):
-            filename = os.path.basename(filename)
-            
-            label = ','.join(map(str, map(int, prediction)))
-            out_file.write('{0},{1}\n'.format(filename, label))
-
+    annotations = [
+        {
+            'id': idx,
+            'file_name': filename,
+            'object': [
+                {
+                    'box': [0, 0, 1, 1],
+                    'label': 'c{}'.format(label+1)
+                } for label in range(7) if prediction[label]
+            ]
+        } for idx, (filename, prediction) in enumerate(zip(filenames, predictions))
+    ]
+    with open('/aichallenge/t3_res_caffeinism.json', 'w') as f:
+        f.write(json.dumps({'annotations': annotations}))
 
 if __name__ == '__main__':
     main()
