@@ -324,6 +324,7 @@ class MultiLabelDataset(data.Dataset):
         root,
         transform=None,
         shy_pct=.0,
+        feed_filename=False,
         **_,
     ):
         self.root = root
@@ -338,6 +339,7 @@ class MultiLabelDataset(data.Dataset):
             
         self.class_to_idx = self._get_class_to_idx_from_annotation(annotation)
         self.samples = self._get_samples_from_annotation(annotation, base_path=data_base_path, shy_pct=shy_pct)
+        self.feed_filename = feed_filename
     
     def __getitem__(self, index):
         path, label = self.samples[index]
@@ -345,7 +347,10 @@ class MultiLabelDataset(data.Dataset):
         if self.transform is not None:
             img = self.transform(img)
                    
-        return img, np.array(label, dtype=np.float)
+        if self.feed_filename:
+            return (img, np.array(label, dtype=np.float)), path
+        else:
+            return img, np.array(label, dtype=np.float)
     
     def __len__(self):
         return len(self.samples)
