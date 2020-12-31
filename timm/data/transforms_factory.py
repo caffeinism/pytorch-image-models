@@ -47,6 +47,7 @@ def transforms_imagenet_train(
         ratio=None,
         hflip=0.5,
         vflip=0.,
+        rotate=0.,
         color_jitter=0.4,
         auto_augment=None,
         interpolation='random',
@@ -74,6 +75,10 @@ def transforms_imagenet_train(
         primary_tfl += [transforms.RandomHorizontalFlip(p=hflip)]
     if vflip > 0.:
         primary_tfl += [transforms.RandomVerticalFlip(p=vflip)]
+        
+    if rotate > 0.:
+        import PIL
+        primary_tfl += [transforms.RandomRotation(degrees=180, resample=PIL.Image.BICUBIC)]
 
     secondary_tfl = []
     if auto_augment:
@@ -173,6 +178,7 @@ def create_transform(
         ratio=None,
         hflip=0.5,
         vflip=0.,
+        rotate=0.,
         color_jitter=0.4,
         auto_augment=None,
         interpolation='bilinear',
@@ -212,6 +218,7 @@ def create_transform(
                 ratio=ratio,
                 hflip=hflip,
                 vflip=vflip,
+                rotate=rotate,
                 color_jitter=color_jitter,
                 auto_augment=auto_augment,
                 interpolation=interpolation,
