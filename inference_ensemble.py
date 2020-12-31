@@ -1,5 +1,8 @@
+#!/usr/bin/env python
 """PyTorch Inference Script
+
 An example inference script that outputs top-k class ids for images in a folder into a csv.
+
 Hacked together by Ross Wightman (https://github.com/rwightman)
 """
 import os
@@ -32,7 +35,7 @@ parser.add_argument('--output_dir', metavar='DIR', default='./',
                     help='path to output files')
 parser.add_argument('-j', '--workers', default=2, type=int, metavar='N',
                     help='number of data loading workers (default: 2)')
-parser.add_argument('-b', '--batch-size', default=256, type=int,
+parser.add_argument('-b', '--batch-size', default=32, type=int,
                     metavar='N', help='mini-batch size (default: 256)')
 parser.add_argument('--img-size', default=None, type=int,
                     metavar='N', help='Input image dimension')
@@ -54,6 +57,8 @@ parser.add_argument('--no-test-pool', dest='no_test_pool', action='store_true',
                     help='disable test time pool')
 parser.add_argument('--topk', default=5, type=int,
                     metavar='N', help='Top-k to output to CSV')
+parser.add_argument('--crop-pct', default=None, type=float,
+                    metavar='N', help='Input image center crop percent (for validation only)')
 
 
 def load_state_dict(checkpoint, use_ema=False):
@@ -98,7 +103,7 @@ def inference(args, checkpoint=None):
                  (args.model, sum([m.numel() for m in model.parameters()])))
 
     config = resolve_data_config(vars(args), model=model)
-    model, test_time_pool = apply_test_time_pool(model, config, args)
+    model, test_time_pool = (model, False) if args.no_test_pool else apply_test_time_pool(model, config)
 
     if args.amp:
         model = amp.initialize(model.cuda(), opt_level='O1')
@@ -113,7 +118,6 @@ def inference(args, checkpoint=None):
     else:
         criterion = nn.CrossEntropyLoss().cuda()
 
-    crop_pct = 1.0 if test_time_pool else config['crop_pct']
     loader = create_loader(
         Dataset(args.data),
         input_size=config['input_size'],
@@ -123,7 +127,7 @@ def inference(args, checkpoint=None):
         mean=config['mean'],
         std=config['std'],
         num_workers=args.workers,
-        crop_pct=crop_pct)
+        crop_pct=args.crop_pct)
 
     model.eval()
 
@@ -147,11 +151,11 @@ def inference(args, checkpoint=None):
                         batch_idx, len(loader), batch_time=batch_time))
 
     logits = np.concatenate(logits, axis=0)
-
+    
     filenames = loader.dataset.filenames()
-
+    
     return logits, filenames
-
+            
 def main():
     setup_default_logging()
     args = parser.parse_args()
@@ -161,21 +165,20 @@ def main():
         data = torch.load(checkpoint, map_location='cpu')
         args.model = data['args'].model
         args.amp   = data['args'].amp
-        args.use_coco_dataset = data['args'].use_coco_dataset
         args.use_multi_label = data['args'].use_multi_label
         args.num_classes = data['args'].num_classes
         args.use_ema = data['args'].model_ema
-
+        
         logits, filenames = inference(args, data)
         logits_list.append(logits)
 
-    _, predictions = ensemble(logits_list, thresholds=np.array([0.35, 0.45, 0.3, 0.6, 0.3, 0.6, 0.5, 0.55]))
+    _, predictions = ensemble(logits_list, thresholds=np.array([0.25, 0.15, 0.4,  0.35, 0.4,  0.55, 0.75]))
     labels = ["can", "plastic", "paper", "vinyl", "normal", "food", "glass", "styrofoam"]
     with open(os.path.join(args.output_dir, './predictions.csv'), 'w') as out_file:
         out_file.write('filename' + ',' + ','.join(labels) + '\n')
         for filename, prediction in zip(filenames, predictions):
             filename = os.path.basename(filename)
-
+            
             label = ','.join(map(str, map(int, prediction)))
             out_file.write('{0},{1}\n'.format(filename, label))
 
