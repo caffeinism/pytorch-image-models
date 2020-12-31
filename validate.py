@@ -171,6 +171,7 @@ def validate(args, checkpoint=None):
 
     data_config = resolve_data_config(vars(args), model=model)
     model, test_time_pool = (model, False) if args.no_test_pool else apply_test_time_pool(model, data_config)
+    print('test_time_pool:', test_time_pool)
 
     if args.torchscript:
         torch.jit.optimized_execution(True)
@@ -214,7 +215,9 @@ def validate(args, checkpoint=None):
     else:
         real_labels = None
 
-    crop_pct = 1.0 if test_time_pool else data_config['crop_pct']
+#     crop_pct = 1.0 if test_time_pool else data_config['crop_pct']
+    print('crop_pct:', data_config['crop_pct'])
+    crop_pct = data_config['crop_pct']
     loader = create_loader(
         dataset,
         input_size=data_config['input_size'],
