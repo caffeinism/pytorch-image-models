@@ -315,6 +315,7 @@ class MultiLabelDataset(data.Dataset):
         images = {image['image_idx']: {'filename': image['filename'], 'label': [shy_pct if is_crawled(image) else 0] * len(annotation['classes'])} for image in annotation['images']}
         for it in annotation['annotations']:
             images[it['image_idx']]['label'][it['class_idx']] = 1
+#             images[it['image_idx']]['label'][it['class_idx']] = 1 - shy_pct
             
         return [(it['filename'], it['label']) for it in images.values()]
 
@@ -344,7 +345,7 @@ class MultiLabelDataset(data.Dataset):
         if self.transform is not None:
             img = self.transform(img)
                    
-        return img, np.array(label)
+        return img, np.array(label, dtype=np.float)
     
     def __len__(self):
         return len(self.samples)
