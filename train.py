@@ -255,11 +255,12 @@ parser.add_argument('--tta', type=int, default=0, metavar='N',
 parser.add_argument("--local_rank", default=0, type=int)
 parser.add_argument('--use-multi-epochs-loader', action='store_true', default=False,
                     help='use the multi-epochs-loader to save time at the beginning of every epoch')
-
 parser.add_argument('--dataset-type', default='multi', type=str, choices=['multi', 'coco', 'default'],
                     help='Choose dataset type')
 parser.add_argument('--use-multi-label', action='store_true', default=False,
                     help='Train with multi-label classification datasets')
+parser.add_argument('--shy-pct', default=0.0, type=float,
+                    help='Negative label (0.0 ~ 0.5)')
 
 
 def _parse_args():
@@ -448,12 +449,17 @@ def main():
         _logger.error('Training folder does not exist at: {}'.format(train_dir))
         exit(1)
 
+    train_dataset_kwargs = {}
+    
+    if args.shy_pct > 0:
+        train_dataset_kwargs['shy_pct'] = args.shy_pct
+        
     if args.dataset_type == 'default':
-        dataset_train = Dataset(train_dir)
+        dataset_train = Dataset(train_dir, **train_dataset_kwargs)
     elif args.dataset_type == 'coco':
-        dataset_train = CocoDataset(train_dir)
+        dataset_train = CocoDataset(train_dir, **train_dataset_kwargs)
     elif args.dataset_type == 'multi':
-        dataset_train = MultiLabelDataset(train_dir)
+        dataset_train = MultiLabelDataset(train_dir, **train_dataset_kwargs)
     else:
         raise NotImplemented
 
@@ -552,6 +558,7 @@ def main():
     else:
         train_loss_fn = nn.CrossEntropyLoss().cuda()
         
+        
     if args.use_multi_label:
         validate_loss_fn = nn.BCEWithLogitsLoss().cuda()
     else:
@@ -597,6 +604,7 @@ def main():
             if model_ema is not None and not args.model_ema_force_cpu:
                 if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
                     distribute_bn(model_ema, args.world_size, args.dist_bn == 'reduce')
+
                 ema_eval_metrics = validate_bulk(
                     model_ema.ema, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast, log_suffix=' (EMA)')
                 eval_metrics = ema_eval_metrics
@@ -644,6 +652,7 @@ def train_epoch(
     for batch_idx, (input, target) in enumerate(loader):
         last_batch = batch_idx == last_idx
         data_time_m.update(time.time() - end)
+        
         if not args.prefetcher:
             input, target = input.cuda(), target.cuda()
             if mixup_fn is not None:
@@ -804,6 +813,7 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
 
     return metrics
 
+
 def validate_bulk(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix=''):
     batch_time_m = AverageMeter()
     losses_m = AverageMeter()
@@ -812,8 +822,8 @@ def validate_bulk(model, loader, loss_fn, args, amp_autocast=suppress, log_suffi
 
     end = time.time()
     last_idx = len(loader) - 1
-
-    logits, targets = [], []
+    
+    logits, targets = [], []    
     with torch.no_grad():
         for batch_idx, (input, target) in enumerate(loader):
             last_batch = batch_idx == last_idx
@@ -831,20 +841,20 @@ def validate_bulk(model, loader, loss_fn, args, amp_autocast=suppress, log_suffi
             if reduce_factor > 1:
                 output = output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
                 target = target[0:target.size(0):reduce_factor]
-
+                
             logit = torch.sigmoid(output)
-
+            
             loss = loss_fn(logit, target)
-
+                
             if args.distributed:
                 reduced_loss = reduce_tensor(loss.data, args.world_size)
                 gathered_logit = gather_tensor(logit.data, args.world_size)
                 gathered_target = gather_tensor(target.data, args.world_size)
             else:
                 reduced_loss = loss.data
-                gathered_logit = logit.data
-                gathered_target = target.data
-
+                gathered_logit = logit.data            
+                gathered_target = target.data            
+                
             torch.cuda.synchronize()
 
             losses_m.update(reduced_loss.item(), input.size(0))
@@ -863,11 +873,11 @@ def validate_bulk(model, loader, loss_fn, args, amp_autocast=suppress, log_suffi
                         loss=losses_m,
                     )
                 )
-
+                
                 logging.info(log_text)
-
+    
     logits, targets = torch.cat(logits).numpy(), torch.cat(targets).numpy()
-
+    
     if not args.use_multi_label:
         acc1, acc5 = bulk_accuracy(output, target, topk=(1, 5))
         metric = {
@@ -876,18 +886,16 @@ def validate_bulk(model, loader, loss_fn, args, amp_autocast=suppress, log_suffi
         }
     else:
         metric = bulk_multi_label_metrics(logits, targets, threshold=0.5)
-
-
+        
     if args.local_rank == 0:
         log_text = ''
         for (_, title), value in metric.items():
             log_text += '{title}: {value:>7.4f}  '.format(title=title, value=value)
         logging.info(log_text)
-
+    
     metrics = OrderedDict([('loss', losses_m.avg), *[(metric_name, value) for (metric_name, _), value in metric.items()]])
 
     return metrics
 
 if __name__ == '__main__':
     main()
-
