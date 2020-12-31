@@ -156,6 +156,8 @@ parser.add_argument('--hflip', type=float, default=0.5,
                     help='Horizontal flip training aug probability')
 parser.add_argument('--vflip', type=float, default=0.,
                     help='Vertical flip training aug probability')
+parser.add_argument('--rotate', type=float, default=0.,
+                    help='Rotate training aug max degrees')
 parser.add_argument('--color-jitter', type=float, default=0.4, metavar='PCT',
                     help='Color jitter factor (default: 0.4)')
 parser.add_argument('--aa', type=str, default=None, metavar='NAME',
@@ -507,6 +509,7 @@ def main():
         ratio=args.ratio,
         hflip=args.hflip,
         vflip=args.vflip,
+        rotate=args.rotate,
         color_jitter=args.color_jitter,
         auto_augment=args.aa,
         num_aug_splits=num_aug_splits,
