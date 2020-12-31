@@ -332,7 +332,9 @@ def main():
     preds, predicts = ensemble(preds_list, targets, thresholds=thresholds)
     
     f1 = f1_score(targets, predicts, average='macro')
-    print('calibrated_f1: ', f1)
+    print('calibrated_f1(macro): ', f1)
+    f1 = f1_score(targets, predicts, average=None)
+    print('calibrated_f1(None): ', f1)
 
     metric = get_metric(preds, targets)
     print(metric)
