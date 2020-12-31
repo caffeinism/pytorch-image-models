@@ -18,7 +18,7 @@ def one_hot(x, num_classes, on_value=1., off_value=0., device='cuda'):
     x = x.long().view(-1, 1)
     return torch.full((x.size()[0], num_classes), off_value, device=device).scatter_(1, x, on_value)
 
-
+# TODO: multi label target mix로 변경
 def mixup_target(target, num_classes, lam=1., smoothing=0.0, device='cuda'):
     off_value = smoothing / num_classes
     on_value = 1. - smoothing + off_value
@@ -26,7 +26,24 @@ def mixup_target(target, num_classes, lam=1., smoothing=0.0, device='cuda'):
     y2 = one_hot(target.flip(0), num_classes, on_value=on_value, off_value=off_value, device=device)
     return y1 * lam + y2 * (1. - lam)
 
+def multi_label_mixup_target_by_max(target, smoothing=.0, device='cuda'):
+    mixed = torch.max(torch.stack([target, target.flip(0)]), dim=0)[0]
+    false_value = mixed < 0.5
+    
+    mixed[false_value] += smoothing
+    mixed[~false_value] -= smoothing
+    
+    return mixed
 
+
+def multi_label_mixup_target(target, lam=1., smoothing=0.0, device='cuda'):
+    false_value = target < 0.5
+    
+    target[false_value] += smoothing
+    target[~false_value] -= smoothing
+    
+    return lam * target + (1-lam) * target.flip(0)
+    
 def rand_bbox(img_shape, lam, margin=0., count=None):
     """ Standard CutMix bounding-box
     Generates a random square bbox based on lambda value. This impl includes
@@ -101,8 +118,11 @@ class Mixup:
         label_smoothing (float): apply label smoothing to the mixed target tensor
         num_classes (int): number of classes for target
     """
-    def __init__(self, mixup_alpha=1., cutmix_alpha=0., cutmix_minmax=None, prob=1.0, switch_prob=0.5,
-                 mode='batch', correct_lam=True, label_smoothing=0.1, num_classes=1000):
+    def __init__(
+        self, mixup_alpha=1., cutmix_alpha=0., cutmix_minmax=None, 
+        prob=1.0, switch_prob=0.5, mode='batch', correct_lam=True,
+        label_smoothing=0.1, num_classes=1000, label_mix_mode=None):
+        
         self.mixup_alpha = mixup_alpha
         self.cutmix_alpha = cutmix_alpha
         self.cutmix_minmax = cutmix_minmax
@@ -117,9 +137,10 @@ class Mixup:
         self.mode = mode
         self.correct_lam = correct_lam  # correct lambda based on clipped area for cutmix
         self.mixup_enabled = True  # set to false to disable mixing (intended tp be set by train loop)
+        self.label_mix_mode = label_mix_mode
 
     def _params_per_elem(self, batch_size):
-        lam = np.ones(batch_size, dtype=np.float32)
+        lam = np.ones(batch_size, dtype=np.float64)
         use_cutmix = np.zeros(batch_size, dtype=np.bool)
         if self.mixup_enabled:
             if self.mixup_alpha > 0. and self.cutmix_alpha > 0.:
@@ -309,8 +330,14 @@ class FastCollateMixup(Mixup):
             lam = self._mix_pair_collate(output, batch)
         else:
             lam = self._mix_batch_collate(output, batch)
-        target = torch.tensor([b[1] for b in batch], dtype=torch.int64)
-        target = mixup_target(target, self.num_classes, lam, self.label_smoothing, device='cpu')
+        
+        target = torch.tensor([b[1] for b in batch])
+        if self.label_mix_mode is None:
+            target = torch.tensor(target, dtype=torch.int64)
+            target = mixup_target(target, self.num_classes, lam, self.label_smoothing, device='cpu')
+        elif self.label_mix_mode == 'multimax':
+            target = multi_label_mixup_target_by_max(target, smoothing=self.label_smoothing)
+        elif self.label_mix_mode == 'multimix':
+            target = multi_label_mixup_target(target, lam, smoothing=self.label_smoothing)
         target = target[:batch_size]
         return output, target
-
