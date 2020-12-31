@@ -1,25 +1,6 @@
 import numpy as np
 
-def ensemble(pred_lists, targets=None, thresholds=None):    
-    if thresholds is not None:
-        print('use custom threshold')
-        thresholds = thresholds
-    elif targets is not None:
-        print('do calibration...')
-        thresholds = calibrate(pred_lists, targets)
-        print('custom_thresholds: ', thresholds)
-    else:
-        print('use default threshold')
-        thresholds = 0.5
-        
-    preds = sum(pred_lists) / len(pred_lists)
-    prediction = preds > thresholds
-    
-    return preds, prediction
-
-def calibrate(pred_lists, targets):
-    preds = sum(pred_lists) / len(pred_lists)
-    
+def calibrate(preds, targets):
     start, end, period = 5, 100, 5
     f1s = []
     for i in range(5, 100, 5):
