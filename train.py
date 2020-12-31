@@ -261,6 +261,9 @@ parser.add_argument('--use-multi-label', action='store_true', default=False,
                     help='Train with multi-label classification datasets')
 parser.add_argument('--shy-pct', default=0.0, type=float,
                     help='Negative label (0.0 ~ 0.5)')
+parser.add_argument('--label-mix-mode', type=str, default=None,
+                    choices=['multimax', 'multimix'],
+                    help='mixup label mix mode')
 
 
 def _parse_args():
@@ -468,9 +471,15 @@ def main():
     mixup_active = args.mixup > 0 or args.cutmix > 0. or args.cutmix_minmax is not None
     if mixup_active:
         mixup_args = dict(
-            mixup_alpha=args.mixup, cutmix_alpha=args.cutmix, cutmix_minmax=args.cutmix_minmax,
-            prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
-            label_smoothing=args.smoothing, num_classes=args.num_classes)
+            mixup_alpha=args.mixup,
+            cutmix_alpha=args.cutmix,
+            cutmix_minmax=args.cutmix_minmax,
+            prob=args.mixup_prob,
+            switch_prob=args.mixup_switch_prob,
+            mode=args.mixup_mode,
+            label_smoothing=args.smoothing, num_classes=args.num_classes,
+            label_mix_mode=args.label_mix_mode,
+        )
         if args.prefetcher:
             assert not num_aug_splits  # collate conflict (need to support deinterleaving in collate mixup)
             collate_fn = FastCollateMixup(**mixup_args)
@@ -657,6 +666,7 @@ def train_epoch(
             input, target = input.cuda(), target.cuda()
             if mixup_fn is not None:
                 input, target = mixup_fn(input, target)
+
         if args.channels_last:
             input = input.contiguous(memory_format=torch.channels_last)
 
