@@ -54,6 +54,8 @@ parser.add_argument('--no-test-pool', dest='no_test_pool', action='store_true',
                     help='disable test time pool')
 parser.add_argument('--topk', default=5, type=int,
                     metavar='N', help='Top-k to output to CSV')
+parser.add_argument('--crop-pct', default=None, type=float,
+                    metavar='N', help='Input image center crop percent (for validation only)')
 
 
 def main():
@@ -90,13 +92,14 @@ def main():
         mean=config['mean'],
         std=config['std'],
         num_workers=args.workers,
-        crop_pct=1.0 if test_time_pool else config['crop_pct'])
+        crop_pct=args.crop_pct)
 
     model.eval()
 
     k = min(args.topk, args.num_classes)
     batch_time = AverageMeter()
     end = time.time()
+    
     logits = []
     with torch.no_grad():
         for batch_idx, (input, _) in enumerate(loader):
@@ -114,13 +117,13 @@ def main():
 
     logits = np.concatenate(logits, axis=0).squeeze()
     labels = ["can", "plastic", "paper", "vinyl", "normal", "food", "glass", "styrofoam"]
-
+    
     with open(os.path.join(args.output_dir, './logits.csv'), 'w') as out_file:
         out_file.write(','.join(labels) + '\n')
         filenames = loader.dataset.filenames()
         for filename, logit in zip(filenames, logits):
             filename = os.path.basename(filename)
-
+            
             label = ','.join(map(str, logit))
             out_file.write('{0},{1}\n'.format(filename, label))
 
