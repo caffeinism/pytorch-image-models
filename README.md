@@ -3,9 +3,10 @@ Modified pytorch-image-models for multi label classfication.
 The code is not well organized.
 
 sample script
-```
-python -m torch.distributed.launch --nproc_per_node=2 train.py /data/dataset/bbmix-dataset/ --model tf_efficientnet_b4_ns -b 12 --sched step --epochs 50 --decay-epochs 20 --decay-rate .1 --opt rmsproptf --opt-eps .001 -j 8 --warmup-lr 1e-6 --weight-decay 1e-5 --drop 0.4 --drop-connect 0.2 --model-ema --model-ema-decay 0.999 --aa rand-m9-mstd0.5 --remode pixel --reprob 0.2 --amp --pretrained  --dataset-type=multi --eval-metric=ap --label-mix-mode=multimix --mixup-prob=0.5 --num-classes=7 --output=/data/checkpoints --smoothing=0.1428 --use-multi-label --mixup 1.0 --mixup-mode=elem --cutmix-minmax 0.3 0.8 --mixup-switch-prob 0.3 --mixup-prob 0.7 --rotate=180 --aa=v0r --lr=0.001 --gp=avgmax
-```
+
+`python -m torch.distributed.launch --nproc_per_node=2 train.py /data/dataset/bbmix-dataset/ --model tf_efficientnet_b4_ns -b 12 --sched step --epochs 50 --decay-epochs 20 --decay-rate .1 --opt rmsproptf --opt-eps .001 -j 8 --warmup-lr 1e-6 --weight-decay 1e-5 --drop 0.4 --drop-connect 0.2 --model-ema --model-ema-decay 0.999 --aa rand-m9-mstd0.5 --remode pixel --reprob 0.2 --amp --pretrained  --dataset-type=multi --eval-metric=ap --label-mix-mode=multimix --mixup-prob=0.5 --num-classes=7 --output=/data/checkpoints --smoothing=0.1428 --use-multi-label --mixup 1.0 --mixup-mode=elem --cutmix-minmax 0.3 0.8 --mixup-switch-prob 0.3 --mixup-prob 0.7 --rotate=180 --aa=v0r --lr=0.001 --gp=avgmax
+`
+
 ---
 
 # PyTorch Image Models, etc
